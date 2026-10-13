@@ -1,0 +1,292 @@
+---
+title: "Projet UE Statistique avec R - Léo GAUTHIER"
+format: html
+editor: visual
+---
+
+```{r, message = FALSE}
+# Espace de chargement des modules nécessaires 
+
+library(tidyverse)
+library(shiny)
+library(dplyr)
+library(ggplot2)
+```
+
+### Question 1
+
+La première étape est de rendre le jeu de données "Tidy", c'est-à-dire que le jeu de données doit être organisée d'une telle façon :
+
+-   Chaque variable doit avoir sa propre colonne.
+
+-   Chaque observation doit avoir sa propre ligne.
+
+-   Chaque valeur doit avoir sa propre cellule.
+
+Le jeu de données fourni est séparé en deux fichiers .csv. Il faut donc importer les deux et les rassembler en un dataframe :
+
+```{r}
+#On importe tout d'abord les deux dataframes
+stockdata2022 = read.table("stock_data_2022.csv", header = TRUE, sep=",", dec =".")
+stockdata2023 = read.table("stock_data_2023.csv", header = TRUE, sep=",", dec =".")
+head(stockdata2022, 5)
+head(stockdata2023, 5)
+```
+
+En regardant les deux jeux de données, on se rend compte qu'il y plusieurs problèmes : les dates n'ont pas le même format, la deuxième colonne "Observation_Type" contient les variables et les valeurs de ces variables sont dans la colonne "Value". On va donc commencer par mettre les dates DD/MM/YYYY des datas de 2023 au format YYYY-MM-DD, comme celles de 2022, et convertir les dates de 2022 en type Date :
+
+```{r}
+#On convertit les colonnes dates vers le bon type
+stockdata2023$Date = as.Date(stockdata2023$Date, format="%d/%m/%Y")
+stockdata2022$Date = as.Date(stockdata2022$Date, format = "%Y-%m-%d")
+head(stockdata2023)
+```
+
+Maintenant que tout concorde, on peut faire la jointure entre les deux jeux de données. Cela créera un dataset de 3650 lignes. Pour avoir un dataframe Tidy, on devrait avoir théoriquement 730 lignes (1 par jour), avec 6 variables : la date, une colonne par action, le volume échangé sur le marché et le sentiment du jour. On utilisera donc la fonction plot_wider() pour "élargir" notre jeu de donnée, et on en profite également pour convertir les variables vers le type qui leur correspond (entier ou numérique)
+
+```{r}
+stockdata = full_join(stockdata2022, stockdata2023, by = c("Date", "Observation_Type", "Value")) %>%
+  pivot_wider(names_from = "Observation_Type", values_from = "Value") %>% 
+  mutate(Price1 = as.numeric(Price1),
+         Price2 = as.numeric(Price2),
+         Price3 = as.numeric(Price3),
+         Volume = as.integer(Volume))
+head(stockdata, 5)
+```
+
+On a ainsi un dataframe avec la date, le prix de chaque action, le volume d'action échangées (vendues, achetées) et le sentiment global (positif, neutre ou négatif) des traders sur le marché à cette date.
+
+On propose quelques graphes avec GGPlot pour illustrer le jeu de données
+
+```{r}
+#Pour identifier si un sentiment est prédominant sur le marché durant ces deux années
+ggplot(data = stockdata) +
+  geom_bar(mapping = aes(x=Sentiment)) +
+  labs(title = "Histogramme de la répartition des sentiments sur le marché", y="Count")
+```
+
+```{r}
+#On peut tracer les 3 séries temporelles des prix des actions :
+
+ggplot(data = stockdata) +
+  geom_line(mapping = aes(x =  Date, y=Price1, color = "Action 1")) +
+  geom_line(mapping = aes(x= Date, y=Price2, color="Action 2")) +
+  geom_line(mapping = aes(x = Date, y=Price3, color = "Action 3")) +
+  scale_color_manual(values = c("Action 1" = "steelblue", "Action 2" = "firebrick", "Action 3" = "darkgreen")) +
+  labs(title = "Évolution des prix des actions", x = "Date", y = "Prix", color = "Légende") +
+  scale_x_date(date_breaks = "6 month", date_labels = "%b %Y")
+```
+
+### Question 2
+
+D'après l'énoncé, le prix au jour $t$ est donnée par la formule de récurrence :
+
+$$
+P_t = P_{t-1} + P_{t-1}(\alpha + \beta(P_{t-1} - P_{t-2}) + \epsilon_t)
+$$
+
+avec $\epsilon_t \sim N(0, \sigma^2)$
+
+Ce modèle comporte 3 paramètres, qui sont justement à estimer :
+
+-   Le drift $\alpha$, qui peut aussi bien être positif que négatif. Ce paramètre va jouer le rôle d'une tendance dans le modèle. Si $\alpha$ est élevé dans les positifs, on va avoir globalement une série croissante de prix, et si il est négatif, la série sera décroissante.
+
+-   Un coefficient de variation $\beta$. S'il est élevé, il amplifiera les écarts de prix et créera donc une instabilité dans la série de prix.
+
+-   La variance $\sigma^2$ .
+
+On peut donc utiliser la propriété de stabilité de la loi normale :
+
+Si $\alpha \geq 0$ et $\lambda$ sont deux réels, et $\epsilon_t \sim N(0, \sigma^2)$ alors $\alpha \epsilon_t + \lambda \sim N(\lambda, \alpha^2 \sigma^2)$
+
+En appliquant cette propriété à la formule précédente qu'on conditionne par les valeurs prises par $P_{t-1}$ et $P_{t-2}$ , on a :
+
+$$
+P_t|P_{t-1},P_{t-2} \sim N(P_{t-1}(1+\alpha+\beta(P_{t-1} - P_{t-2})), P_{t-1}^2\sigma^2)
+$$
+
+Posons $m_t = P_{t-1}(1+\alpha+\beta(P_{t-1} - P_{t-2})$. Si on observe $P_1,…,P_T$, on peut donc exprimer la fonction de vraisemblance en conditionnant par $P_1, P_2$ :
+
+$$
+L(\alpha, \beta, \sigma^2 ; (P_t)_{t \in \{ 3,...,T\}} \mid P_1, P_2) = \prod_{t=3}^T \frac{1}{\sqrt{2\pi P_{t-1}^2\sigma^2}}exp(-\frac{(P_t - m_t)^2}{2P_{t-1}^2\sigma^2})
+$$
+
+Et la fonction de log-vraisemblance est donnée par :
+
+$$
+l(\alpha, \beta, \sigma^2 ; (P_t)_{t \in \{ 3,...,T\}} \mid P_1, P_2) = \sum_{t=3}^T -\frac{1}{2}log(2\pi P_{t-1}^2\sigma^2) - \frac{(P_t - m_t)^2}{2P_{t-1}^2\sigma^2}
+$$
+
+```{r}
+# On crée la fonction de log-vraisemblance avec une somme.
+
+logV = function(alpha, beta, sigma2, P){
+  T = length(P)
+  logV = 0
+  for(t in 3:T){
+    m_t = P[t-1]*(1+alpha+beta*(P[t-1]-P[t-2]))
+    v_t = P[t-1]**2 * sigma2  
+    logV = logV + dnorm(P[t], mean= m_t, sd = sqrt(v_t), log=TRUE)
+  }
+  return(logV)
+}
+
+#On teste avec quelques valeurs de alpha, beta, sigma^2, et les différentes séries de prix :
+
+P1 = stockdata$Price1 #On isole la colonne P1 dans un vecteur simple pour fluidifier la suite du code
+P2 = stockdata$Price2
+P3 = stockdata$Price3
+
+logV(0.0001, 0.0005, 0.001, P1)
+logV(0.0001, 0.0005, 0.001, P2)
+logV(0.0001, 0.0005, 0.001, P3)
+```
+
+### Question 3
+
+Puisque les 3 séries de prix sont indépendantes, on sait que la densité du vecteur $(P^{(1)}_t, P^{(2)}_t,P^{(3)}_t)$ est donnée par le produit des densités. La vraisemblance sera donc le produit des 3 vraisemblances, et la log-vraisemblance est :
+
+$$
+l(\alpha, \beta, \sigma^2 ; (P_t^{(1)},P_t^{(2)}, P_t^{(3)})_{t \in \{ 3,...,T\}} \mid P_1, P_2) = l((P_t^{(1)})_t) + l((P_t^{(2)})_t) + l((P_t^{(3)})_t)
+$$
+
+```{r}
+logV_serie = function(alpha, beta, sigma2, P1, P2, P3){
+  logV_serie = 0
+  logV_serie = logV(alpha, beta, sigma2, P1) + logV(alpha, beta, sigma2, P2) + logV(alpha, beta, sigma2, P3)
+  return(logV_serie)
+}
+
+#Comme avant, on teste avec des valeurs de alpha, beta, sigma^2 et les 3 séries de prix 
+
+logV_serie(0.0001, 0.0005, 0.001, P1, P2, P3)
+```
+
+### Question 4
+
+Pour pouvoir calculer les estimateurs du max de vraisemblance pour $\alpha$, $\beta$ et $\sigma^2$, on doit maximiser la fonction de vraisemblance. On utilise la fonction optim(), mais elle minimise. On va donc utiliser l'opposé de la log-vraisemblance.
+
+```{r}
+to_minimise = function(theta, P1, P2, P3){
+  alpha=theta[1]
+  beta=theta[2]
+  sigma2=theta[3]
+  return(-logV_serie(alpha, beta, sigma2,P1, P2, P3))
+}
+to_minimise(c(0.0001,0.0005,0.001),P1, P2, P3)
+```
+
+```{r}
+#on calcule les EMV des 3 séries de prix.
+#On pourrait calculer les EMV de chaque série de prix à part, mais puisque les paramètres sont supposés identiques peu importe la série de prix, les EMV calculés sur les 3 séries d'un coup sera plus "précis"
+
+mv_total = optim(c(0.0001,0.0005,0.001), #un vecteur de paramètre lambda
+                 fn = to_minimise, #la fonction qu'on cherche à minimiser
+                 P1 = P1, 
+                 P2 = P2,
+                 P3 = P3)
+
+#On vérifie que notre algorithme a fonctionné :
+print(mv_total$convergence)
+
+```
+
+Puisque convergence = 0, les emv calculés sont corrects
+
+### Question 5
+
+On définit désormais une fonction simulation. On va donc reprendre la formule de récurrence du sujet et simuler le bruit gaussien $\epsilon_t$
+
+Cette fonction prendre pour argument les 2 premiers prix de la série de prix et les paramètres, qui seront ceux estimés.
+
+```{r}
+simulation_action = function(P1, P2, alpha, beta, sigma2){ 
+  P = numeric(730) #On crée P comme un vecteur numérique de taille 730
+  P[1] = P1
+  P[2] = P2
+  for(t in 3:730){ #Simulation sur les deux ans
+    e_t = rnorm(1, mean = 0, sd =  sqrt(sigma2)) #On crée le bruit gaussien
+    P[t] = P[t-1]+P[t-1]*(alpha+beta*(P[t-1]-P[t-2]) + e_t)
+  }  
+  return(P)
+}
+
+#On isole les EMV 
+
+alpha_mv = mv_total$par[1]
+beta_mv = mv_total$par[2]
+sigma2_mv = mv_total$par[3]
+```
+
+Simulons la série de prix $P_t^{(1)}$ :
+
+```{r}
+sim_p1 = simulation_action(P1[1], P1[2], alpha_mv, beta_mv, sigma2_mv)
+
+#Pour avoir un graphique correct avec ggplot, on doit créer un dataframe à 2 colonnes: l'une numérotée de 1 à 730 et l'autre avec la simulation
+
+ggplot(data = data.frame(x = 1:730, y =sim_p1)) +
+  geom_line(mapping = aes(x=x, y=y, color = "Simulation")) +
+  geom_line(data = data.frame(x=1:730, y=P1), aes(x=x, y=y, color = "Action 1")) +
+  scale_color_manual(values = c("Simulation" = "steelblue", "Action 1" = "firebrick")) +
+  labs(title= "Simulation de la série de prix 1", x="Temps t", y="Prix", color = "Légende") 
+
+```
+
+On fait de même avec $P_t^{(2)}$ et $P_t^{(3)}$ :
+
+```{r}
+sim_p2 = simulation_action(P2[1], P2[2], alpha_mv, beta_mv, sigma2_mv)
+
+ggplot(data = data.frame(x = 1:730, y =sim_p2)) +
+  geom_line(mapping = aes(x=x, y=y, color = "Simulation")) +
+  geom_line(data = data.frame(x=1:730, y=P2), aes(x=x, y=y, color = "Action 2")) +
+  scale_color_manual(values = c("Simulation" = "steelblue", "Action 2" = "darkgreen")) +
+  labs(title= "Simulation de la série de prix 2", x="Temps t", y="Prix", color = "Légende")
+```
+
+```{r}
+sim_p3 = simulation_action(P3[1], P3[2], alpha_mv, beta_mv, sigma2_mv)
+
+ggplot(data = data.frame(x = 1:730, y =sim_p3)) +
+  geom_line(mapping = aes(x=x, y=y, color = "Simulation")) +
+  geom_line(data = data.frame(x=1:730, y=P3), aes(x=x, y=y, color = "Action 3")) +
+  scale_color_manual(values = c("Simulation" = "steelblue", "Action 3"="darkorchid1")) +
+  labs(title= "Simulation de la série de prix 3", x="Temps t", y="Prix", color = "Légende")
+```
+
+```{r, include=FALSE}
+#Pour pouvoir faire énormement de simulations en jouant sur les paramètres ou les variations de prix, on crée également un slider
+
+ui = fluidPage(
+  titlePanel("Simulation du prix d'action"), 
+  sidebarLayout(
+    sidebarPanel(
+      sliderInput("Prix2", "Prix2:", min = 95, max = 105, value = 100, step = 0.1),
+      sliderInput("alpha", "alpha:", min = -0.005, max = 0.005, value = 0.001, step =0.0001),
+      sliderInput("beta", "beta:", min = 0, max= 0.002, value = 0.0001, step=0.00001),
+      sliderInput("sigma2", "sigma2:", min = 0.0001, max = 0.001, value = 0.0001, step=0.00001)
+    ),
+    mainPanel(
+      plotOutput("Plot_du_prix_action")
+    )
+  )
+)
+
+server = function(input, output){
+output$Plot_du_prix_action = renderPlot({
+plot(simulation_action(100, input$Prix2, input$alpha, input$beta, input$sigma2), type="l")
+})
+}
+
+shinyApp(ui = ui, server = server)
+
+```
+
+### Conclusion
+
+C'est un modèle simple pour modéliser le prix d'une action. Les variables Sentiment et Volume n'interviennent pas dans le modèle
+
+On aurait pu imaginer un modèle où le coefficient de variation $\beta$ dépend, par exemple, des écarts de prix en remontant plus loin qu'à $t-2$ , ou de la variable Sentiment pour ajouter à ce modèle l'impact de la psychologie du marché.
+
+De plus, les simulations étant très souvent très éloignées de la réalité, ce qui est logique, mais on aura du mal à essayer de faire des prédictions sur les prix. On peut cependant rapprocher ce modèle d'une série temporelle, et ainsi appliquer les méthodes qu'on connait, telle qu'un modèle ARIMA pour estimer et prédire.
