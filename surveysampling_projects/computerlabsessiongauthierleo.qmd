@@ -1,0 +1,768 @@
+---
+title: "Survey Sampling - Computer Lab Session"
+author: "Léo Gauthier"
+format: pdf
+editor: visual
+---
+
+```{r, message=FALSE, warning=FALSE, echo=FALSE}
+library(sampling)
+library(survey)
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r, message=FALSE}
+rec99htegne <- read.csv("rec99htegne.csv")
+attach(rec99htegne)
+```
+
+```{r, message=FALSE, echo=FALSE}
+LOGVAV<-as.numeric(LOGVAC)
+LOG<-as.numeric(LOG)
+```
+
+# 1. Data presentation
+
+We take a first look at the data and how the dataset is constructed :
+
+```{r}
+head(rec99htegne)
+```
+
+```{r}
+str(rec99htegne)
+```
+
+```{r}
+summary(rec99htegne)
+```
+
+# 2. First part : SRSWOR and BE sampling designs
+
+## 2.1 Preliminary results
+
+Since we have access to the whole population, let's take a look at the variable of interest, the total $Y=\displaystyle \sum_{i\in U} y_i$ of `LOGVAC`. In practice, it's not possible and we need to estimate it using a specific sampling design and estimator.
+
+```{r}
+cat("The size of the population is N =", dim(rec99htegne)[1], "\n")
+cat("The true total is Y =", sum(LOGVAC),"\n")
+```
+
+We can also compute the variance of $Y$, $S_y^2$, over the whole population. In practice, we also need to estimate it :
+
+```{r}
+cat("The variance of Y over the whole population is Sy^2 = ", 
+    var(LOGVAC))
+```
+
+```{r, message=FALSE, echo=FALSE}
+pop_theoretical <- data.frame(
+  N = dim(rec99htegne)[1],
+  Y = sum(LOGVAC),
+  variance = var(LOGVAC))
+```
+
+## 2.2 Theoretical results
+
+We can compute, for a given sampling design, the true variance of the Horvitz-Thompson estimator of $Y$ :
+
+$$
+\hat Y_{\pi} = \sum_{i\in s} \frac{y_i}{\pi_i},
+$$
+
+where $\pi_i = \mathbb P(i\in s)$.
+
+For a *SRSWOR(n)*, its true variance is given by :
+
+$$
+\mathbb V(\hat Y_\pi)=N^2(1-\frac{n}N) \frac{S_y^2}n.
+$$
+
+```{r}
+# for n = 70 :
+554^2 * (1-70/554) * (var(LOGVAC) /70)
+```
+
+For a *BE(*$\pi$*)*, it is given by :
+
+$$
+\mathbb V(\hat Y_\pi) = \frac{1-\pi}\pi \sum_{i\in U} y_i^2.
+$$
+
+```{r}
+# for pi=70/554
+(1-(70/554))/(70/554) * sum(LOGVAC**2)
+```
+
+The size $n_s$ of the sample obtained with this *BE(*$\pi$*)* follows a binomial distribution of parameters $\mathcal B(N=554,p=\pi)$. Thus, the expected size is $\mathbb E(n_s)=N\times \pi=70$.
+
+We notice that $\mathbb V_{SRSWOR(70)}(\hat Y_\pi) \leq \mathbb V_{BE(70/554)}(\hat Y_\pi)$. So here, *SRSWOR(70)* seems to be better suited to estimate the total.
+
+## 2.3 The SRSWOR sampling design
+
+Now, we consider that we can't do a census on the population and we will use a *SRSWOR(70)* to estimate the total $Y$, with the Horvitz-Thompson estimator :
+
+$$
+  \hat Y_\pi=\frac{N}n\sum_{i\in s}y_i.
+$$
+
+### 2.3.1 For one sample
+
+Let's start with one sample :
+
+```{r}
+set.seed(1)
+srswor70 <- srswor(70, dim(rec99htegne)[1])
+
+ech.si <- svydesign(id=~CODE_N,
+                    weights=rep(554/70,70), #d_i=1/pi_i
+                    fpc=rep(554,70), # 1-n/N 
+                    data=rec99htegne[which(srswor70==1),])
+
+est<- svytotal(~LOGVAC, ech.si) # total estimator
+
+cat("The Horvitz-Thompson estimator of the total 
+    for this SRSWOR(70) is Yhat =", est[1], "\n")
+```
+
+We can now compute some measures in order to assess the quality of the estimator :
+
+1.  The estimator of the variance of $\hat Y_\pi$.
+
+2.  The coefficient of variation $\displaystyle CV(\hat Y_\pi)=\frac{\sqrt{\mathbb V(\hat Y_\pi)}}{\mathbb E(\hat Y_\pi)}$.
+
+3.  The $95\%$ confidence interval.
+
+4.  Since we have theoretical results over the whole population, including the true total, we can compute the relative bias / error of $\hat Y_\pi$, $\displaystyle RB(\hat Y_\pi)=\frac{B(\hat Y_\pi)}{Y}$
+
+5.  We can also compute the design effect $\displaystyle deff(p) = \frac{\mathbb{V} _p(\hat Y_\pi)}{\mathbb V_{SRSWOR}(\hat Y_\pi)}$. However, for the *SRSWOR*, the $deff$ is equal to $1$.
+
+```{r}
+res_one_sample_srs <- data.frame(
+  n=70,
+  Y_hat=est[1],
+  var_hat=as.numeric(SE(est)^2),
+  cv_hat=as.numeric(SE(est)/est[1]),
+  ci_upper=as.numeric(est[1]+1.96 * SE(est)),
+  ci_lower=as.numeric(est[1]-1.96 * SE(est)),
+  rel_bias=(est[1]-sum(LOGVAC))/sum(LOGVAC),
+  deff=1,
+  row.names="srswor70")
+
+knitr::kable(t(res_one_sample_srs), digits = 3,
+             caption = "One-sample estimates")
+```
+
+We notice that the relative error of $\hat Y_\pi$ is relatively low (around $5\%$), but the coefficient of variation is quite high (almost $26\%$) which leaves the door open for improvement
+
+Furthermore, the seed we are using is important, the results change for each seed :
+
+```{r}
+set.seed(67) # different seed
+srswor70 <- srswor(70, dim(rec99htegne)[1])
+
+ech.si <- svydesign(id=~CODE_N,
+                    weights=rep(554/70,70), #d_i=1/pi_i
+                    fpc=rep(554,70),
+                    data=rec99htegne[which(srswor70==1),])
+
+est<- svytotal(~LOGVAC, ech.si) # total estimator
+
+cat("The Horvitz-Thompson estimator of the total 
+    for this SRSWOR(70) is Yhat =", est[1], "\n")
+
+cat("The coefficient of variation of the HT estimator 
+    of the total for this SRSWOR(70) is Yhat =", SE(est)/est[1], "\n")
+```
+
+### 2.3.2 Simulations
+
+We have illustrated the variability due to the different seed, which illustrate the sampling variability more than the properties of the Horvitz-Thompson estimator. To have a better evaluation of these properties, we do Monte Carlo simulations :
+
+```{r}
+M=1000 # number of simulation
+total_esti <- rep(1, M) # the vector to stock the ht estimator for each simu
+var_esti <- rep(1,M) # to stock the variance for each simu
+
+for(m in 1:M){
+  set.seed(m)
+  srswor70 <- srswor(70, dim(rec99htegne)[1])
+  ech.si <- svydesign(id=~CODE_N,
+                      weights=rep(554/70,70), #d_i
+                      fpc=rep(554,70),
+                      data=rec99htegne[which(srswor70==1),])
+  est_m<- svytotal(~LOGVAC, ech.si)
+  
+  total_esti[m] <- est_m[1]
+  var_esti[m] <- SE(est_m)^2
+}
+
+res_simu_srs <- data.frame(
+  n=70,
+  Y_hat_mc=mean(total_esti),
+  mean_var_mc=mean(var_esti),
+  emp_var_mc=var(total_esti),
+  cv_mc=sqrt(var(total_esti))/mean(total_esti),
+  rel_bias_mc=(mean(total_esti)-sum(LOGVAC))/(sum(LOGVAC)),
+  deff_mc = var(total_esti)/(554^2 * (1-70/554) * (var(LOGVAC) /70)),
+  row.names = "srswor70"
+)
+
+knitr::kable(t(res_simu_srs), digits = 3,
+             caption = "MC estimates")
+
+```
+
+Here, we observe that the empirical variance and the mean variance of the Horvitz-Thompson estimator over these Monte Carlo simulations are similar. The relative bias of the Horvitz-Thompson estimator is close to zero, which indicates that the estimator is almost unbiased and its coefficient of variation is around $19\%$.
+
+We can also visualize the distribution of the Horvitz-Thompson estimators obtained by simulations :
+
+```{r}
+hist(total_esti)
+#plotting the true value of the total
+abline(v=sum(LOGVAC), col="red", lty=2, lwd=2) 
+```
+
+It appears approximately bell-shaped, centered around the true value of $Y$, and few extreme values.
+
+## 2.4 The BE sampling design
+
+### For one sample
+
+Now, we use a *BE(*$\pi$*)* sampling design, for which the Horvitz-Thompson estimator of the total is given by :
+
+$$
+\hat Y_\pi = \frac1\pi \sum_{i\in s} y_i.
+$$
+
+```{r}
+BE=function(N,pi)
+{x=runif(N)
+y=as.numeric(x<pi)
+y
+}
+
+be.rec99<-BE(554,70/554)
+
+sample<-rec99htegne[which(be.rec99==1),]
+cat("The sample is of size n_s =", sum(be.rec99), "\n")
+```
+
+We create a function to compute the Horvitz-Thompson estimator for this sampling design :
+
+```{r}
+compute_ht_estimators_be <- function(y, pi){
+  N <- length(y)
+  be.sample<-BE(N,pi)
+  
+  sample<-y[which(be.sample==1)]
+  
+  total_be <- 1/pi * sum(sample) # horvitz thompson est
+  
+  variance_est_total_be <- (1-pi)/(pi^2)*sum(sample^2) # its variance
+  return(
+    list(n=sum(be.sample),
+         est_total =total_be,
+    var_est = variance_est_total_be)
+  )
+}
+```
+
+And for just one sample :
+
+```{r}
+set.seed(1)
+be_pi<-compute_ht_estimators_be(y=rec99htegne$LOGVAC, pi=70/554)
+
+res_one_sample_be <- data.frame(n=be_pi$n,
+  Y_hat=be_pi$est_total,
+  var_hat=be_pi$var_est,
+  cv_hat=as.numeric(sqrt(be_pi$var_est)/be_pi$est_total),
+  ci_upper=as.numeric(be_pi$est_total+1.96 * sqrt(be_pi$var_est)),
+  ci_lower=as.numeric(be_pi$est_total-1.96 * sqrt(be_pi$var_est)),
+  rel_bias=(be_pi$est_total-sum(LOGVAC))/sum(LOGVAC),
+  deff=be_pi$var_est/(554^2 * (1-70/554) * (var(LOGVAC) /70)),
+  row.names="be_pi")
+
+res_one_sample <- rbind(res_one_sample_srs, res_one_sample_be)
+knitr::kable(t(res_one_sample), digits = 3,
+             caption = "One-sample estimates")
+```
+
+### Simulations
+
+For the same reason as *SRSWOR*, a Monte Carlo simulation loop is a good idea to assess the quality of the estimator without sampling variabilty :
+
+```{r}
+M<-1000
+
+total_esti_be <- rep(1, M)
+var_esti_be <- rep(1,M)
+n_be <- rep(1,M)
+
+for(m in 1:M){
+  set.seed(m)
+  est_m<-compute_ht_estimators_be(y=rec99htegne$LOGVAC, pi=70/554)
+  n_be[m]<-est_m$n
+  total_esti_be[m] <- est_m$est_total
+  var_esti_be[m] <- est_m$var_est
+}
+
+res_simu_be <- data.frame(
+  n=mean(n_be),
+  Y_hat_mc=mean(total_esti_be),
+  mean_var_mc=mean(var_esti_be),
+  emp_var_mc=var(total_esti_be),
+  cv_mc=sqrt(var(total_esti_be))/mean(total_esti_be),
+  rel_bias_mc = (mean(total_esti_be)-sum(LOGVAC))/(sum(LOGVAC)),
+  deff_mc = var(total_esti_be)/(554^2 * (1-70/554) * (var(LOGVAC) /70)),
+  row.names = "be_pi"
+)
+
+res_simu <- rbind(res_simu_srs, res_simu_be)
+knitr::kable(t(res_simu), digits = 3,
+             caption = "MC estimates")
+```
+
+The unbiasedness is visible also in this sampling design, but the coefficient of variation is bigger than it was in *SRSWOR(n)*.
+
+We can also visualize the distribution of the Horvitz-Thompson estimators obtained by these Monte Carlo simulations :
+
+```{r}
+hist(total_esti_be)
+abline(v=sum(LOGVAC), col="red", lty=2, lwd=2) 
+```
+
+The distribution has a very similar shape with the one obtained by *SRSWOR(n)* but there are a few more extreme values.
+
+In conclusion, like in the theoretical part, we observe that the *BE(*$\pi$*)* sampling design has a bigger variance and thus a bigger coefficient of variation. We derive the same conclusion from the $deff(BE)$, which follows the theoretical property of the Bernoulli sampling design being always less efficient than the SRSWOR when $CV(Y)>0$. The *SRSWOR(n)* sampling design seems to be a better choice here.
+
+# 3. Second part : Stratified SRSWOR sampling design
+
+## 3.2 Drawing a sample with a STSRSWOR sampling design and estimation
+
+In order to use a stratified *SRSWOR* sampling design using the variable `stratlog` as the stratification variable, we need to know the size of each strata.
+
+Let us consider a $n=70$ *STSRSWOR* sampling design. We can create a function to compute the size of sample in each strata according to the chosen allocation :
+
+```{r}
+compute_alloc<-function(n, y, aux_stratum, aux_variable){
+  df<-data.frame(y=y,stratum=aux_stratum, aux_variable=aux_variable)
+  N_h <- as.numeric(table(df$stratum)) #size of strata using the stratum variable
+  H<-length(N_h) # number of strata
+  S_h<-rep(0,H)
+  n_h <- rep(0,H)
+  n_xh<-rep(0,H)
+  # proportional allocation
+  n_h_prop <- round(n*(N_h/sum(N_h)))
+  # neyman allocation
+  for(h in 1:H){
+    y_h<-df$y[df$stratum==h]
+    S_h[h]<-sd(y_h) 
+    n_h[h]<-N_h[h]*S_h[h] # numerator
+  }
+  n_h<-round(n*(n_h/sum(n_h)))
+  # neyman allocation using an auxiliary variable
+  for(h in 1:H){
+      x_h<-df$aux_variable[df$stratum==h]
+      S_h[h]<-sd(x_h) 
+      n_xh[h]<-N_h[h]*S_h[h] # numerator
+  }
+  n_xh <- round(n*(n_xh/sum(n_xh)))
+  if (sum(n_xh) > n) {
+    #if sum n_h > n we let one of the smallest stratum out 
+    #since its the stratum that has the lowest variability
+    n_xh[which.min(n_xh)] <- n_xh[which.min(n_xh)] - (sum(n_xh) - n)
+  }
+  return(list(
+    N_h = N_h,
+    n_prop = n_h_prop,
+    n_neyman = n_h,
+    n_x_neyman = n_xh))
+}
+size_strata<-compute_alloc(n=70, 
+                           y=rec99htegne$LOGVAC, 
+                           aux_stratum = rec99htegne$stratlog,
+                           aux_variable = rec99htegne$LOG)
+```
+
+### 3.2.1 Proportional allocation
+
+The proportional allocation is obtained with
+
+$$
+n_h = n \times \frac{N_h}N
+$$
+
+and so
+
+$$
+\pi_i = \frac{n_h}{N_h}=\frac nN \quad \forall i \in U_h
+$$
+
+For this allocation, we obtain these four sizes of stratum :
+
+```{r}
+size_strata$n_prop
+```
+
+Then, we do a STSRSWOR with these strata :
+
+```{r}
+set.seed(1)
+# conflict w survival::strata
+stsi.rec<-sampling::strata(rec99htegne[order(rec99htegne$stratlog),],
+                          "stratlog",
+                          size=size_strata$n_prop,
+                          method="srswor")
+
+stsi.data<-getdata(rec99htegne[order(rec99htegne$stratlog),],
+                  stsi.rec)
+
+colnames(stsi.data)
+```
+
+```{r}
+head(stsi.data)
+```
+
+We can now compute the Horvitz-Thompson stratified estimator of the total, given by the following formula :
+
+$$
+\hat Y_\pi = \sum_{h=1}^H \sum_{i \in s_h} \frac{y_{i}}{\pi_{i}}
+$$
+
+```{r}
+ech.si <- svydesign(id=~CODE_N, 
+                    strata = stsi.data$stratlog, # the strata
+                    weights=I(1/stsi.data$Prob), # the d_i
+                    fpc=c(rep(size_strata$N_h[1], size_strata$n_prop[1]),
+                          rep(size_strata$N_h[2], size_strata$n_prop[2]),
+                          rep(size_strata$N_h[3], size_strata$n_prop[3]),
+                          rep(size_strata$N_h[4], size_strata$n_prop[4])),
+                    data=stsi.data)
+
+est_stp <- svytotal(~LOGVAC, ech.si, deff = TRUE)
+```
+
+We obtain this estimation of the total :
+
+```{r}
+est_stp[1]
+```
+
+Finally, we check the measures to assess its quality :
+
+```{r}
+res_one_sample_st_p <- data.frame(
+  n=70,
+  Y_hat=est_stp[1],
+  var_hat=as.numeric(SE(est_stp)^2),
+  cv_hat=as.numeric(SE(est_stp)/est_stp[1]),
+  ci_upper=as.numeric(est_stp[1]+1.96 * SE(est_stp)),
+  ci_lower=as.numeric(est_stp[1]-1.96 * SE(est_stp)),
+  rel_bias=(est_stp[1]-sum(LOGVAC))/sum(LOGVAC),
+  deff=as.numeric(deff(est_stp)),
+  row.names="st_prop")
+
+res_one_sample<-rbind(res_one_sample, res_one_sample_st_p)
+knitr::kable(t(res_one_sample), digits = 3,
+             caption = "One-sample estimates")
+```
+
+The main thing in these results is that the coefficient of variation is much lower, and so the variability of the Horvitz-Thompson stratified estimator of the total is lower than the one of the classical estimator without stratification. Stratification is an amelioration. But can we determine "better" allocation for the strata ?
+
+### 3.2.2 Neyman allocation
+
+This is why we will now use the Neyman allocation, defined by :
+
+$$
+n_h = n \times \frac{N_h S_{yh}}{\sum_{h=1}^H N_h S_{yh}}
+$$
+
+where $S_{yh}$ is the variability of the $y_i$'s in each stratum.
+
+It gives us the following strata, that we already computed with the previous function :
+
+```{r}
+size_strata$n_neyman
+```
+
+It's the complete opposite of the proportional allocation : we have much more individuals in the fourth strata, which is the smallest but the one with the biggest variability. We now compute the stratified estimator with this allocation for the total :
+
+```{r}
+set.seed(1)
+stsin.rec=sampling::strata(rec99htegne[order(rec99htegne$stratlog),],
+                          "stratlog",
+                          size=size_strata$n_neyman,
+                          method="srswor")
+
+stsin.data=getdata(rec99htegne[order(rec99htegne$stratlog),],
+                  stsin.rec)
+```
+
+```{r}
+ech.sin <- svydesign(id=~CODE_N, 
+                    strata = stsin.data$stratlog, # the strata
+                    weights=I(1/stsin.data$Prob), # the d_i
+                    fpc=c(rep(size_strata$N_h[1], size_strata$n_neyman[1]),
+                          rep(size_strata$N_h[2], size_strata$n_neyman[2]),
+                          rep(size_strata$N_h[3], size_strata$n_neyman[3]),
+                          rep(size_strata$N_h[4], size_strata$n_neyman[4])),
+                    data=stsin.data)
+
+est_stn <- svytotal(~LOGVAC, ech.sin, deff=TRUE)
+```
+
+We obtain this estimation of the total :
+
+```{r}
+est_stn[1]
+```
+
+And we can assess its quality with the same measures :
+
+```{r}
+res_one_sample_st_n <- data.frame(
+  n=70,
+  Y_hat=est_stn[1],
+  var_hat=as.numeric(SE(est_stn)^2),
+  cv_hat=as.numeric(SE(est_stn)/est_stn[1]),
+  ci_upper=as.numeric(est_stn[1]+1.96 * SE(est_stn)),
+  ci_lower=as.numeric(est_stn[1]-1.96 * SE(est_stn)),
+  rel_bias=(est_stn[1]-sum(LOGVAC))/sum(LOGVAC),
+  deff=as.numeric(deff(est_stn)),
+  row.names="st_neyman")
+
+res_one_sample<-rbind(res_one_sample, res_one_sample_st_n)
+knitr::kable(t(res_one_sample), digits = 3,
+             caption = "One-sample estimates")
+```
+
+The optimal allocation is much better than the proportional allocation : the coefficient of variation is $6.3\%$. However, in practice, this allocation may not always be used since we need the variability of the whole population inside each stratum $S_{yh}$.
+
+### 3.2.3 Neyman allocation using an auxiliary variable
+
+We do not always have access to the $y_i$'s for the whole population, but sometimes we have access to an auxiliary variable $x$ for this whole population. And we can use this variable to build the strata by replacing $S_{yh}$ by $S_{xh}$. To be sure that the resulting allocations are good, there should be some kind of linear relationship between $y$ and $x$. In `rec99htegne`, we use the number of empty dwellings `LOGVAC` as our $y$, but there is also the number of dwellings `LOG` that can be a good auxiliary variable :
+
+```{r, echo=FALSE}
+plot(LOG, LOGVAC)
+```
+
+The relationship is reasonably linear, so we can compute the strata using `LOG` as the auxiliary variable with the following formula :
+
+$$
+n_h = n\times \frac{N_h S_{xh}}{\sum_{h=1}^H N_h S_{xh}}
+$$
+
+We obtain the following strata :
+
+```{r}
+size_strata$n_x_neyman
+```
+
+Then, we compute the sampling design and the Horvitz-Thompson stratified estimator of the total for this allocation :
+
+```{r}
+set.seed(1)
+stsinx.rec <- sampling::strata(rec99htegne[order(rec99htegne$stratlog),],
+                          "stratlog",
+                          size=size_strata$n_x_neyman,
+                          method="srswor")
+
+stsinx.data <- getdata(rec99htegne[order(rec99htegne$stratlog),],
+                  stsinx.rec)
+
+ech.sinx <- svydesign(id=~CODE_N, 
+                    strata = stsinx.data$stratlog, #the strata
+                    weights=I(1/stsinx.data$Prob), # the d_i
+                    fpc=c(rep(size_strata$N_h[1], size_strata$n_x_neyman[1]),
+                          rep(size_strata$N_h[2], size_strata$n_x_neyman[2]),
+                          rep(size_strata$N_h[3], size_strata$n_x_neyman[3]),
+                          rep(size_strata$N_h[4], size_strata$n_x_neyman[4])),
+                    data=stsinx.data)
+
+est_stnx <- svytotal(~LOGVAC, ech.sinx, deff=TRUE)
+```
+
+We obtain this estimation of the total :
+
+```{r}
+est_stnx[1]
+```
+
+We check the same measures to assess the quality of the estimator :
+
+```{r}
+res_one_sample_st_nx <- data.frame(
+  n=70,
+  Y_hat=est_stnx[1],
+  var_hat=as.numeric(SE(est_stnx)^2),
+  cv_hat=as.numeric(SE(est_stnx)/est_stnx[1]),
+  ci_upper=as.numeric(est_stnx[1]+1.96 * SE(est_stnx)),
+  ci_lower=as.numeric(est_stnx[1]-1.96 * SE(est_stnx)),
+  rel_bias=(est_stnx[1]-sum(LOGVAC))/sum(LOGVAC),
+  deff=as.numeric(deff(est_stnx)),
+  row.names="st_neyman_x")
+
+res_one_sample<-rbind(res_one_sample, res_one_sample_st_nx)
+knitr::kable(t(res_one_sample), digits = 3,
+             caption = "One-sample estimates")
+```
+
+The coefficient of variation is very close of the coefficient of variation of the optimal allocation, so `LOG` is a good auxiliary variable.
+
+## 3.3 Simulations
+
+For the same reasons as the classical *SRSWOR* and *BE,* we will do Monte Carlo simulations. We will run them for each of the three previous allocation. Let us start with the proportional allocation :
+
+```{r}
+M=1000
+total_esti_stp <- rep(1, M)
+var_esti_stp <- rep(1,M)
+
+for(m in 1:M){
+  set.seed(m)
+  stsi.rec<-sampling::strata(rec99htegne[order(rec99htegne$stratlog),],
+                          "stratlog",
+                          size=size_strata$n_prop,
+                          method="srswor")
+
+  stsi.data<-getdata(rec99htegne[order(rec99htegne$stratlog),],
+                  stsi.rec)
+
+  ech.si <- svydesign(id=~CODE_N, 
+                    strata = stsi.data$stratlog, 
+                    weights=I(1/stsi.data$Prob),
+                    fpc=c(rep(size_strata$N_h[1], size_strata$n_prop[1]),
+                          rep(size_strata$N_h[2], size_strata$n_prop[2]),
+                          rep(size_strata$N_h[3], size_strata$n_prop[3]),
+                          rep(size_strata$N_h[4], size_strata$n_prop[4])),
+                    data=stsi.data)
+
+  est_stp_m <- svytotal(~LOGVAC, ech.si)
+  
+  total_esti_stp[m] <- est_stp_m[1]
+  var_esti_stp[m] <- SE(est_stp_m)^2
+}
+
+res_simu_st_prop <- data.frame(
+  n=70,
+  Y_hat_mc=mean(total_esti_stp),
+  mean_var_mc=mean(var_esti_stp),
+  emp_var_mc=var(total_esti_stp),
+  cv_mc=sqrt(var(total_esti_stp))/mean(total_esti_stp),
+  rel_bias_mc = (mean(total_esti_stp)-sum(LOGVAC))/(sum(LOGVAC)),
+  deff_mc = var(total_esti_stp)/(554^2 * (1-70/554) * (var(LOGVAC) /70)),
+  row.names = "st_prop"
+)
+
+res_simu <- rbind(res_simu, res_simu_st_prop)
+knitr::kable(t(res_simu), digits = 3,
+             caption = "MC estimates")
+```
+
+Now, we do the Monte Carlo simulations for the optimal allocation :
+
+```{r}
+M=1000
+total_esti_stn <- rep(1, M)
+var_esti_stn <- rep(1,M)
+
+for(m in 1:M){
+  set.seed(m)
+  stsin.rec=sampling::strata(rec99htegne[order(rec99htegne$stratlog),],
+                            "stratlog",
+                            size=size_strata$n_neyman,
+                            method="srswor")
+  
+  stsin.data=getdata(rec99htegne[order(rec99htegne$stratlog),],
+                    stsin.rec)
+
+  ech.sin <- svydesign(id=~CODE_N, 
+                    strata = stsin.data$stratlog, 
+                    weights=I(1/stsin.data$Prob), 
+                    fpc=c(rep(size_strata$N_h[1], size_strata$n_neyman[1]),
+                          rep(size_strata$N_h[2], size_strata$n_neyman[2]),
+                          rep(size_strata$N_h[3], size_strata$n_neyman[3]),
+                          rep(size_strata$N_h[4], size_strata$n_neyman[4])),
+                    data=stsin.data)
+
+  est_stn_m <- svytotal(~LOGVAC, ech.sin)
+  
+  total_esti_stn[m] <- est_stn_m[1]
+  var_esti_stn[m] <- SE(est_stn_m)^2
+}
+
+res_simu_st_n <- data.frame(
+  n=70,
+  Y_hat_mc=mean(total_esti_stn),
+  mean_var_mc=mean(var_esti_stn),
+  emp_var_mc=var(total_esti_stn),
+  cv_mc=sqrt(var(total_esti_stn))/mean(total_esti_stn),
+  rel_bias_mc = (mean(total_esti_stn)-sum(LOGVAC))/(sum(LOGVAC)),
+  deff_mc = var(total_esti_stn)/(554^2 * (1-70/554) * (var(LOGVAC) /70)),
+  row.names = "st_neyman"
+)
+
+res_simu <- rbind(res_simu, res_simu_st_n)
+knitr::kable(t(res_simu), digits = 3,
+             caption = "MC estimates")
+```
+
+And lastly the simulations for the optimal allocation using an auxiliary variable :
+
+```{r}
+M=1000
+total_esti_stnx <- rep(1, M)
+var_esti_stnx <- rep(1,M)
+
+for(m in 1:M){
+  set.seed(m)
+  stsinx.rec=sampling::strata(rec99htegne[order(rec99htegne$stratlog),],
+                            "stratlog",
+                            size=size_strata$n_x_neyman,
+                            method="srswor")
+  
+  stsinx.data=getdata(rec99htegne[order(rec99htegne$stratlog),],
+                    stsinx.rec)
+
+  ech.sinx <- svydesign(id=~CODE_N, 
+                    strata = stsinx.data$stratlog, 
+                    weights=I(1/stsinx.data$Prob), 
+                    fpc=c(rep(size_strata$N_h[1], size_strata$n_x_neyman[1]),
+                          rep(size_strata$N_h[2], size_strata$n_x_neyman[2]),
+                          rep(size_strata$N_h[3], size_strata$n_x_neyman[3]),
+                          rep(size_strata$N_h[4], size_strata$n_x_neyman[4])),
+                    data=stsinx.data)
+
+  est_stn_m <- svytotal(~LOGVAC, ech.sinx)
+  
+  total_esti_stnx[m] <- est_stn_m[1]
+  var_esti_stnx[m] <- SE(est_stn_m)^2
+}
+
+res_simu_st_nx <- data.frame(
+  n=70,
+  Y_hat_mc=mean(total_esti_stnx),
+  mean_var_mc=mean(var_esti_stnx),
+  emp_var_mc=var(total_esti_stnx),
+  cv_mc=sqrt(var(total_esti_stnx))/mean(total_esti_stnx),
+  rel_bias_mc = (mean(total_esti_stnx)-sum(LOGVAC))/(sum(LOGVAC)),
+  deff_mc = var(total_esti_stnx)/(554^2 * (1-70/554) * (var(LOGVAC) /70)),
+  row.names = "st_neyman_x"
+)
+
+res_simu <- rbind(res_simu, res_simu_st_nx)
+knitr::kable(t(res_simu), digits = 3,
+             caption = "MC estimates")
+```
+
+We could have used the $deff$ for comparison between sampling design, that we have calculated for each sampling design, but only interpreted for the Bernoulli sampling design. Our conclusion using the $deff$ follows our conclusion using the $CV$
+
+# Conclusion
+
+From all these Monte Carlo simulations, we can conclude that the Stratified *SRSWOR* using the Neyman allocation is the best sampling design in terms of precision. It has the lowest coefficient of variation and its $deff$ indicates that it is approximatively $7$ times better than the classical *SRSWOR*.
+
+However, in practice as we've already mentionned, we often cannot use it because we do not have access to the variabilty of the population in each stratum $S^2_{yh}$. When it is the case, we can use an auxiliary variable $x$ strongly correlated to $y$ to construct the strata using the variability of $x$ on the population in each stratum $S^2_{xh}$. Here, we used the variable `LOG` as the auxiliary variable and we see that the results are really close to the optimal allocation. Moreover, the Neyman allocation is optimal at the population level in terms of variance and coefficient of variation, but it might cause certain strata to have larger CV's
